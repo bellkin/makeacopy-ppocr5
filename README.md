@@ -1,4 +1,4 @@
-# MakeACopy
+# MakeACopy (PPOCRv5)
 
 MakeACopy is an open-source **offline document scanner with OCR** for Android, designed for privacy-friendly and self-hosted document workflows.
 
