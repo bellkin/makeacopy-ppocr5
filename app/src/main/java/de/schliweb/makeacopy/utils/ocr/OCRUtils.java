@@ -9,33 +9,65 @@
  */
 package de.schliweb.makeacopy.utils.ocr;
 
-import java.util.Locale;
+import java.util.*;
 import lombok.experimental.UtilityClass;
 
-/**
- * A utility class providing methods for optimal OCR language selection and handling of supported
- * language configurations. This class is designed to work with Tesseract OCR language codes and
- * assists in determining effective language settings based on user preferences or the system's
- * locale.
- *
- * <p>This class is not intended to be instantiated.
- */
 @UtilityClass
 public class OCRUtils {
 
-  private static final String TAG = "OCRUtils";
+  private static final Map<String, String> TESSERACT_TO_PADDLE = new HashMap<>();
+  private static final Map<String, List<String>> PADDLE_TO_TESSERACT = new HashMap<>();
 
-  /**
-   * Resolves the effective language based on the provided language option and the system's default
-   * locale. If a specific language option is given, it will return that language. Otherwise, it
-   * resolves the appropriate language code based on the system's default language and region. The
-   * returned language code is compatible with Tesseract OCR.
-   *
-   * @param languageOpt A string representing the optional language code. If null or empty, the
-   *     method uses the system's default language to determine the effective language.
-   * @return A string representing the effective language code. If no valid language can be
-   *     determined, the default value "eng" (for English) is returned.
-   */
+  static {
+    // English
+    TESSERACT_TO_PADDLE.put("eng", "english");
+
+    // Latin group (most European languages)
+    String[] latin = {
+      "deu", "fra", "ita", "spa", "por", "nld", "pol", "ces", "slk", "hun", "ron", "dan", "nor",
+      "swe", "tur"
+    };
+    for (String l : latin) TESSERACT_TO_PADDLE.put(l, "latin");
+
+    // Slavic/Cyrillic
+    TESSERACT_TO_PADDLE.put("rus", "eslav");
+
+    // Arabic script
+    TESSERACT_TO_PADDLE.put("ara", "arabic");
+    TESSERACT_TO_PADDLE.put("fas", "arabic");
+
+    // Hindi
+    TESSERACT_TO_PADDLE.put("hin", "hindi");
+
+    // Thai
+    TESSERACT_TO_PADDLE.put("tha", "thai");
+
+    // Chinese
+    TESSERACT_TO_PADDLE.put("chi_sim", "chinese");
+    TESSERACT_TO_PADDLE.put("chi_tra", "chinese");
+
+    // Korean
+    // Not in original Tesseract langs, but if added
+    // TESSERACT_TO_PADDLE.put("kor", "korean");
+
+    // Build reverse mapping
+    PADDLE_TO_TESSERACT.put("english", Collections.singletonList("eng"));
+    PADDLE_TO_TESSERACT.put(
+        "latin",
+        Arrays.asList(
+            "eng", "deu", "fra", "ita", "spa", "por", "nld", "pol", "ces", "slk", "hun", "ron",
+            "dan", "nor", "swe", "tur"));
+    PADDLE_TO_TESSERACT.put("eslav", Collections.singletonList("rus"));
+    PADDLE_TO_TESSERACT.put("arabic", Arrays.asList("ara", "fas"));
+    PADDLE_TO_TESSERACT.put("hindi", Collections.singletonList("hin"));
+    PADDLE_TO_TESSERACT.put("thai", Collections.singletonList("tha"));
+    PADDLE_TO_TESSERACT.put("chinese", Arrays.asList("chi_sim", "chi_tra"));
+    PADDLE_TO_TESSERACT.put("korean", Collections.emptyList());
+    PADDLE_TO_TESSERACT.put("greek", Collections.emptyList());
+    PADDLE_TO_TESSERACT.put("tamil", Collections.emptyList());
+    PADDLE_TO_TESSERACT.put("telugu", Collections.emptyList());
+  }
+
   public static String resolveEffectiveLanguage(String languageOpt) {
     if (languageOpt != null && !languageOpt.trim().isEmpty()) {
       return languageOpt;
@@ -52,66 +84,36 @@ public class OCRUtils {
         } else {
           return "chi_sim";
         }
-      } else if ("de".equalsIgnoreCase(sys)) {
-        return "deu";
-      } else if ("fr".equalsIgnoreCase(sys)) {
-        return "fra";
-      } else if ("it".equalsIgnoreCase(sys)) {
-        return "ita";
-      } else if ("es".equalsIgnoreCase(sys)) {
-        return "spa";
-      } else if ("pt".equalsIgnoreCase(sys)) {
-        return "por";
-      } else if ("nl".equalsIgnoreCase(sys)) {
-        return "nld";
-      } else if ("pl".equalsIgnoreCase(sys)) {
-        return "pol";
-      } else if ("cs".equalsIgnoreCase(sys)) {
-        return "ces";
-      } else if ("ru".equalsIgnoreCase(sys)) {
-        return "rus";
-      } else if ("th".equalsIgnoreCase(sys)) {
-        return "tha";
-      } else if ("sk".equalsIgnoreCase(sys)) {
-        return "slk";
-      } else if ("hu".equalsIgnoreCase(sys)) {
-        return "hun";
-      } else if ("ro".equalsIgnoreCase(sys)) {
-        return "ron";
-      } else if ("da".equalsIgnoreCase(sys)) {
-        return "dan";
-      } else if ("sv".equalsIgnoreCase(sys)) {
-        return "swe";
-      } else if ("no".equalsIgnoreCase(sys)
+      } else if ("de".equalsIgnoreCase(sys)) return "deu";
+      else if ("fr".equalsIgnoreCase(sys)) return "fra";
+      else if ("it".equalsIgnoreCase(sys)) return "ita";
+      else if ("es".equalsIgnoreCase(sys)) return "spa";
+      else if ("pt".equalsIgnoreCase(sys)) return "por";
+      else if ("nl".equalsIgnoreCase(sys)) return "nld";
+      else if ("pl".equalsIgnoreCase(sys)) return "pol";
+      else if ("cs".equalsIgnoreCase(sys)) return "ces";
+      else if ("ru".equalsIgnoreCase(sys)) return "rus";
+      else if ("th".equalsIgnoreCase(sys)) return "tha";
+      else if ("sk".equalsIgnoreCase(sys)) return "slk";
+      else if ("hu".equalsIgnoreCase(sys)) return "hun";
+      else if ("ro".equalsIgnoreCase(sys)) return "ron";
+      else if ("da".equalsIgnoreCase(sys)) return "dan";
+      else if ("sv".equalsIgnoreCase(sys)) return "swe";
+      else if ("no".equalsIgnoreCase(sys)
           || "nb".equalsIgnoreCase(sys)
-          || "nn".equalsIgnoreCase(sys)) {
-        return "nor";
-      } else if ("fa".equalsIgnoreCase(sys)) {
-        return "fas";
-      } else if ("ar".equalsIgnoreCase(sys)) {
-        return "ara";
-      } else if ("hi".equalsIgnoreCase(sys)) {
-        return "hin";
-      } else if ("tr".equalsIgnoreCase(sys)) {
-        return "tur";
-      } else {
-        return "eng";
-      }
+          || "nn".equalsIgnoreCase(sys)) return "nor";
+      else if ("fa".equalsIgnoreCase(sys)) return "fas";
+      else if ("ar".equalsIgnoreCase(sys)) return "ara";
+      else if ("hi".equalsIgnoreCase(sys)) return "hin";
+      else if ("tr".equalsIgnoreCase(sys)) return "tur";
+      else return "eng";
     } catch (Throwable ignore) {
       return "eng";
     }
   }
 
-  /**
-   * Maps a system language code to the corresponding Tesseract OCR language code. If the provided
-   * language is not recognized, defaults to "eng" (English). Special handling is applied for
-   * Chinese to differentiate between simplified and traditional scripts based on the system region.
-   *
-   * @param systemLanguage A string representing the system language code (e.g., "en", "de", "zh").
-   * @return A string representing the corresponding Tesseract OCR language code. Defaults to "eng"
-   *     if the input language is not recognized.
-   */
   public static String mapSystemLanguageToTesseract(String systemLanguage) {
+    if (systemLanguage == null) return "eng";
     return switch (systemLanguage) {
       case "en" -> "eng";
       case "de" -> "deu";
@@ -135,7 +137,6 @@ public class OCRUtils {
       case "hi" -> "hin";
       case "tr" -> "tur";
       case "zh" -> {
-        // Map Chinese to Simplified or Traditional based on region, default to Simplified
         try {
           Locale loc = Locale.getDefault();
           String country = loc.getCountry();
@@ -145,7 +146,6 @@ public class OCRUtils {
             yield "chi_tra";
           }
         } catch (Throwable ignore) {
-          // Best-effort; failure is non-critical
         }
         yield "chi_sim";
       }
@@ -153,16 +153,25 @@ public class OCRUtils {
     };
   }
 
-  /**
-   * Retrieves a list of supported language codes.
-   *
-   * @return An array of strings representing the language codes supported for OCR. The codes
-   *     include "eng" (English), "deu" (German), "fra" (French), "ita" (Italian), "spa" (Spanish),
-   *     "por" (Portuguese), "nld" (Dutch), "pol" (Polish), "ces" (Czech), "slk" (Slovak), "hun"
-   *     (Hungarian), "ron" (Romanian), "dan" (Danish), "nor" (Norwegian), "swe" (Swedish), "rus"
-   *     (Russian), "tha" (Thai), "fas" (Persian/Farsi), "ara" (Arabic), "hin" (Hindi), "tur"
-   *     (Turkish), "chi_sim" (Simplified Chinese), and "chi_tra" (Traditional Chinese).
-   */
+  /** Maps a Tesseract 3-letter language code to the corresponding PaddleOCR language group. */
+  public static String mapTesseractToPaddleGroup(String tesseractLang) {
+    if (tesseractLang == null || tesseractLang.isEmpty()) return "english";
+    if (tesseractLang.contains("+")) {
+      return mapTesseractToPaddleGroup(tesseractLang.split("\\+", -1)[0].trim());
+    }
+    String group = TESSERACT_TO_PADDLE.get(tesseractLang);
+    if (group != null) return group;
+    return "latin";
+  }
+
+  /** Maps a PaddleOCR language group to the set of Tesseract language codes it covers. */
+  public static List<String> mapPaddleGroupToTesseract(String paddleGroup) {
+    if (paddleGroup == null || paddleGroup.isEmpty()) return Collections.emptyList();
+    List<String> langs = PADDLE_TO_TESSERACT.get(paddleGroup);
+    if (langs != null) return langs;
+    return Collections.emptyList();
+  }
+
   public static String[] getLanguages() {
     return new String[] {
       "eng", "deu", "fra", "ita", "spa", "por", "nld", "pol", "ces", "slk", "hun", "ron", "dan",

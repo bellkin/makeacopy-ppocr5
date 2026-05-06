@@ -9,11 +9,8 @@
  */
 package de.schliweb.makeacopy.ui.ocr;
 
-import android.app.Activity;
-import android.content.Intent;
 import android.graphics.Bitmap;
 import android.graphics.Matrix;
-import android.net.Uri;
 import android.os.Bundle;
 import android.util.Log;
 import android.view.LayoutInflater;
@@ -22,8 +19,6 @@ import android.view.ViewGroup;
 import android.widget.AutoCompleteTextView;
 import android.widget.Toast;
 import androidx.activity.OnBackPressedCallback;
-import androidx.activity.result.ActivityResultLauncher;
-import androidx.activity.result.contract.ActivityResultContracts;
 import androidx.annotation.NonNull;
 import androidx.appcompat.app.AlertDialog;
 import androidx.core.view.ViewCompat;
@@ -31,13 +26,11 @@ import androidx.core.view.WindowInsetsCompat;
 import androidx.fragment.app.Fragment;
 import androidx.lifecycle.ViewModelProvider;
 import androidx.navigation.Navigation;
-import com.googlecode.tesseract.android.TessBaseAPI;
 import dagger.hilt.android.AndroidEntryPoint;
 import de.schliweb.makeacopy.R;
 import de.schliweb.makeacopy.databinding.FragmentOcrBinding;
 import de.schliweb.makeacopy.ui.crop.CropViewModel;
 import de.schliweb.makeacopy.utils.image.ImageLoader;
-import de.schliweb.makeacopy.utils.image.OpenCVUtils;
 import de.schliweb.makeacopy.utils.infra.FeatureFlags;
 import de.schliweb.makeacopy.utils.ocr.*;
 import de.schliweb.makeacopy.utils.ui.DialogUtils;
@@ -56,18 +49,16 @@ import javax.inject.Provider;
 /**
  * OCRFragment handles the Optical Character Recognition (OCR) functionality within the application.
  * This fragment manages UI and orchestration; the actual OCR work is done on a dedicated
- * single-thread executor with a fresh TessBaseAPI instance per job to ensure thread-safety.
+ * single-thread executor with a fresh PaddleOCR engine per job to ensure thread-safety.
  *
  * <p>Flow: Crop -> (optional) User Rotation -> OCR -> Export
  */
 @AndroidEntryPoint
 public class OCRFragment extends Fragment {
   private static final String TAG = "OCRFragment";
-  // Early-exit thresholds are now centralized in OcrEarlyExitPolicy. The previous
-  // "meanConf >= 55" gate was too lenient and would early-exit on tiny garbage
-  // results (e.g. 12 words / meanConf 55 / textLen 52), preventing recovery via
-  // further rotation attempts and the layout-analysis full-page fallback. The new
-  // policy also requires a minimum word count and a minimum text length.
+  // Early-exit threshold: if the first rotation attempt (extra=0) reaches this mean confidence,
+  // we skip trying further 90° rotations to save time. Adjust if needed.
+  private static final int OCR_EARLY_EXIT_MEAN_CONF_THRESHOLD = 55;
 
   private FragmentOcrBinding binding;
   private OCRViewModel ocrViewModel;
@@ -76,19 +67,16 @@ public class OCRFragment extends Fragment {
   // Track last observed image to decide when to reset OCR state
   private Bitmap lastObservedBitmap;
 
-  // Language helper for listing/availability checks (no long-lived TessBaseAPI instance)
+  // Language helper for listing/availability checks (no long-lived PaddleOCR engine instance)
   private OCRHelper langHelper;
 
   @Inject Provider<OCRHelper> ocrHelperProvider;
   @Inject DictionaryManager dictionaryManager;
 
-  // Concurrency: serialize OCR jobs, 1 job ↔ 1 TessBaseAPI instance
+  // Concurrency: serialize OCR jobs, 1 job ↔ 1 PaddleOCREngine instance
   private final ExecutorService ocrExecutor = Executors.newSingleThreadExecutor();
   private volatile Future<?> runningOcr = null;
   private final AtomicBoolean ocrCancelled = new AtomicBoolean(false);
-
-  // SAF launcher for manual traineddata import
-  private ActivityResultLauncher<Intent> openTraineddataLauncher;
 
   public static final String BUNDLE_OCR_AUTO_ROTATE_APPLY_EXPORT = "ocr_auto_rotate_apply_export";
   public static final String BUNDLE_OCR_POST_PROCESSING = "ocr_post_processing";
@@ -135,30 +123,10 @@ public class OCRFragment extends Fragment {
       // Best-effort; failure is non-critical
     }
 
-    // Language helper (no initTesseract() here!)
+    // Language helper (no initTesseract() here! Language helper for listing/availability)
     langHelper = ocrHelperProvider.get();
 
-    // Init SAF launcher for manual .traineddata import
-    openTraineddataLauncher =
-        registerForActivityResult(
-            new ActivityResultContracts.StartActivityForResult(),
-            result -> {
-              if (result.getResultCode() == Activity.RESULT_OK && result.getData() != null) {
-                Intent data = result.getData();
-                Uri uri = data.getData();
-                boolean ok = uri != null && OcrModelManager.importFromUri(requireContext(), uri);
-                UIUtils.showToast(
-                    requireContext(),
-                    ok
-                        ? getString(R.string.ocr_import_success)
-                        : getString(R.string.ocr_import_failed),
-                    Toast.LENGTH_SHORT);
-                if (ok) {
-                  refreshLanguageSpinner();
-                  prepareReprocessAfterModelChange();
-                }
-              }
-            });
+    // Manual model import removed - PaddleOCR models are bundled in assets
 
     // State observer
     ocrViewModel
@@ -320,7 +288,7 @@ public class OCRFragment extends Fragment {
         .addCallback(getViewLifecycleOwner(), backCallback);
 
     // OCR options (settings) icon above the button bar
-    binding.buttonOcrOptions.setOnClickListener(v -> showOcrOptionsDialog());
+    binding.buttonOcrOptions.setVisibility(View.GONE);
     // OCR Review icon (optional, feature-flagged)
     if (!FeatureFlags.isOcrReviewEnabled()) {
       binding.buttonOcrReview.setVisibility(View.GONE);
@@ -348,17 +316,13 @@ public class OCRFragment extends Fragment {
 
   /**
    * Language spinner now only updates ViewModel language and UI. We do NOT touch any long-lived
-   * TessBaseAPI here.
+   * PaddleOCR engine here.
    */
   private static final String PREFS_NAME = "export_options";
 
   private static final String PREF_KEY_OCR_LANG = "ocr_language";
-  private static final String PREF_KEY_OCR_MODE = "ocr_prep_mode"; // 0=Original,1=Quick,2=Robust
 
-  // Recognition prep modes (image preprocessing before Tesseract)
-  private static final int OCR_MODE_ORIGINAL = 0;
-  private static final int OCR_MODE_QUICK = 1;
-  private static final int OCR_MODE_ROBUST = 2;
+  // OCR prep modes removed - PaddleOCR handles preprocessing internally
 
   // Maximum number of languages that can be selected for multi-language OCR
   private static final int MAX_LANGUAGES = 2;
@@ -419,6 +383,7 @@ public class OCRFragment extends Fragment {
     de.schliweb.makeacopy.ui.ocr.OCRViewModel.OcrUiState st0 = ocrViewModel.getState().getValue();
     boolean alreadyProcessed0 = (st0 != null && st0.imageProcessed());
     if (bitmap != null && !alreadyProcessed0) {
+      PaddleOCREngine.breadcrumb(requireContext(), "ocrfg_auto_trigger");
       performOCR();
     }
 
@@ -560,7 +525,7 @@ public class OCRFragment extends Fragment {
     }
   }
 
-  /** Get available languages without keeping a long-lived TessBaseAPI. */
+  /** Get available languages without keeping a long-lived PaddleOCR engine. */
   private String[] getAvailableLanguages() {
     try {
       if (langHelper != null) {
@@ -651,9 +616,9 @@ public class OCRFragment extends Fragment {
         two = "tr";
         break;
       case "chi_sim":
-        return appendVariantLabel("Chinese (Simplified)", code);
+        return "Chinese (Simplified)";
       case "chi_tra":
-        return appendVariantLabel("Chinese (Traditional)", code);
+        return "Chinese (Traditional)";
       default:
         // Fallback: try first two letters
         if (code != null && code.length() >= 2) {
@@ -669,475 +634,16 @@ public class OCRFragment extends Fragment {
     } catch (Throwable ignore) {
       baseName = code;
     }
-    return appendVariantLabel(baseName, code);
-  }
-
-  private String appendVariantLabel(String baseName, String code) {
-    String variant = determineModelVariant(code);
-    return baseName + " (" + variant + ")";
+    return baseName;
   }
 
   /**
-   * Determine whether the given language code uses the built-in fast asset or an imported best
-   * model. Heuristic: if a file exists in no_backup/tessdata whose size is larger than the asset's
-   * size (or asset absent), treat it as Best; otherwise Fast.
-   */
-  private String determineModelVariant(String code) {
-    return isUsingBestModel(code) ? "Best" : "Fast";
-  }
-
-  /**
-   * Check whether the given language code uses a Best model (imported larger model) rather than the
-   * built-in Fast asset. Heuristic: if a file exists in no_backup/tessdata whose size is larger
-   * than the asset's size (or asset absent), treat it as Best; otherwise Fast.
-   *
-   * @param code The language code (e.g., "eng", "deu")
-   * @return true if Best model is detected, false for Fast model
-   */
-  private boolean isUsingBestModel(String code) {
-    try {
-      java.io.File dir = OCRHelper.getTessdataDir(requireContext());
-      java.io.File local = new java.io.File(dir, code + ".traineddata");
-      long localSize = local.exists() ? local.length() : -1L;
-
-      long assetSize = -1L;
-      try {
-        // Count asset bytes even if compressed in APK
-        java.io.InputStream in =
-            requireContext().getAssets().open("tessdata/" + code + ".traineddata");
-        try {
-          byte[] buf = new byte[8192];
-          long total = 0;
-          int n;
-          while ((n = in.read(buf)) != -1) total += n;
-          assetSize = total;
-        } finally {
-          try {
-            in.close();
-          } catch (Throwable ignore) {
-            // Best-effort; failure is non-critical
-          }
-        }
-      } catch (Throwable ignore) {
-        // asset not present
-        assetSize = -1L;
-      }
-
-      // Decide Best vs Fast with small margin to avoid equality due to copy
-      if (localSize > 0 && (assetSize < 0 || localSize > assetSize + 1024)) {
-        return true;
-      }
-    } catch (Throwable ignoreAll) {
-      // Best-effort; failure is non-critical
-    }
-    return false;
-  }
-
-  /** Refresh the language spinner after importing new models. */
-  private void refreshLanguageSpinner() {
-    try {
-      // Recreate helper to see any new files (not strictly necessary)
-      langHelper = ocrHelperProvider.get();
-      setupLanguageSpinner();
-    } catch (Throwable t) {
-      Log.w(TAG, "Failed to refresh language spinner", t);
-    }
-  }
-
-  /**
-   * After models are added or removed, allow the user to restart OCR easily. This switches the
-   * primary action to "Process" and wires it to performOCR().
-   */
-  private void prepareReprocessAfterModelChange() {
-    try {
-      Bitmap bmp = cropViewModel != null ? cropViewModel.getImageBitmap().getValue() : null;
-      boolean hasImage = bmp != null;
-      binding.buttonProcess.setText(R.string.btn_process);
-      binding.buttonProcess.setEnabled(hasImage);
-      binding.buttonProcess.setOnClickListener(v -> performOCR());
-    } catch (Throwable ignore) {
-      // Best-effort; failure is non-critical
-    }
-  }
-
-  /**
-   * Heuristic for the adaptive Quick→Robust switch: returns true when the input bitmap shows
-   * strongly uneven illumination (shadow/lighting gradient typical for phone photos), where global
-   * Otsu in Quick mode would likely clip and lose text.
-   *
-   * <p>The actual decision logic lives in {@link
-   * de.schliweb.makeacopy.utils.ocr.UnevenLightingPolicy} so it can be unit-tested without an
-   * Android device. This method only handles bitmap downsampling and pixel extraction.
-   */
-  private static boolean hasUnevenLighting(android.graphics.Bitmap b) {
-    if (b == null || b.isRecycled()) return false;
-    try {
-      int w = b.getWidth();
-      int h = b.getHeight();
-      if (w < 4 || h < 4) return false;
-      // Downsample to keep this cheap regardless of input size.
-      int target = 192;
-      int longSide = Math.max(w, h);
-      double scale = longSide > target ? (double) target / (double) longSide : 1.0;
-      int dw = Math.max(4, (int) Math.round(w * scale));
-      int dh = Math.max(4, (int) Math.round(h * scale));
-      android.graphics.Bitmap small =
-          (dw == w && dh == h) ? b : android.graphics.Bitmap.createScaledBitmap(b, dw, dh, true);
-      try {
-        int n = dw * dh;
-        int[] px = new int[n];
-        small.getPixels(px, 0, dw, 0, 0, dw, dh);
-        return de.schliweb.makeacopy.utils.ocr.UnevenLightingPolicy.isUneven(px, dw, dh);
-      } finally {
-        if (small != b && !small.isRecycled()) small.recycle();
-      }
-    } catch (Throwable t) {
-      // On any failure, be conservative and do not trigger the adaptive switch.
-      return false;
-    }
-  }
-
-  private int getSelectedOcrMode() {
-    try {
-      android.content.SharedPreferences sp =
-          requireContext().getSharedPreferences(PREFS_NAME, android.content.Context.MODE_PRIVATE);
-      // Migration: Quick is no longer a user-facing mode (FR#74 benchmark 2026-04-26b
-      // showed Quick == Robust for binaryOutput=false). Map any persisted Quick to Robust
-      // and default new installs to Robust.
-      int stored = sp.getInt(PREF_KEY_OCR_MODE, OCR_MODE_ROBUST);
-      if (stored == OCR_MODE_QUICK) {
-        stored = OCR_MODE_ROBUST;
-        sp.edit().putInt(PREF_KEY_OCR_MODE, stored).apply();
-      }
-      return stored;
-    } catch (Throwable ignore) {
-      return OCR_MODE_ROBUST;
-    }
-  }
-
-  private void setSelectedOcrMode(int mode) {
-    try {
-      android.content.SharedPreferences sp =
-          requireContext().getSharedPreferences(PREFS_NAME, android.content.Context.MODE_PRIVATE);
-      sp.edit().putInt(PREF_KEY_OCR_MODE, mode).apply();
-    } catch (Throwable ignore) {
-      // Best-effort; failure is non-critical
-    }
-  }
-
-  private static final String BUNDLE_LAYOUT_ANALYSIS = "layout_analysis";
-
-  private void showOcrPrepModeDialog() {
-    android.view.LayoutInflater inflater = android.view.LayoutInflater.from(requireContext());
-    android.view.View view = inflater.inflate(R.layout.dialog_ocr_prep_mode, null);
-
-    android.widget.RadioGroup rg = view.findViewById(R.id.rg_ocr_modes);
-    android.widget.RadioButton rbOriginal = view.findViewById(R.id.rbtn_mode_original);
-    android.widget.RadioButton rbRobust = view.findViewById(R.id.rbtn_mode_robust);
-    android.widget.CheckBox cbOcrAuto =
-        view.findViewById(R.id.checkbox_ocr_auto_rotate_apply_export_dialog);
-    android.widget.CheckBox cbOcrPostProc =
-        view.findViewById(R.id.checkbox_ocr_post_processing_dialog);
-    android.widget.CheckBox cbLayoutAnalysis =
-        view.findViewById(R.id.checkbox_layout_analysis_dialog);
-
-    // Only show layout analysis checkbox if feature flag is enabled
-    boolean layoutFeatureEnabled = FeatureFlags.isLayoutAnalysisEnabled();
-    cbLayoutAnalysis.setVisibility(
-        layoutFeatureEnabled ? android.view.View.VISIBLE : android.view.View.GONE);
-
-    int mode = Math.max(0, Math.min(2, getSelectedOcrMode()));
-    // Quick mode is hidden in the picker (see dialog_ocr_prep_mode.xml: rbtn_mode_quick
-    // is gone). Treat any lingering Quick selection as Robust for the UI state.
-    if (mode == OCR_MODE_QUICK) mode = OCR_MODE_ROBUST;
-    if (mode == 0) rbOriginal.setChecked(true);
-    else rbRobust.setChecked(true);
-
-    boolean ocrAutoRotateApply = false;
-    boolean ocrPostProcessing = true; // default ON
-    boolean layoutAnalysis = false; // default OFF
-    try {
-      android.content.SharedPreferences p =
-          requireContext()
-              .getSharedPreferences("export_options", android.content.Context.MODE_PRIVATE);
-      ocrAutoRotateApply = p.getBoolean(BUNDLE_OCR_AUTO_ROTATE_APPLY_EXPORT, false);
-      ocrPostProcessing = p.getBoolean(BUNDLE_OCR_POST_PROCESSING, true);
-      layoutAnalysis = p.getBoolean(BUNDLE_LAYOUT_ANALYSIS, false);
-    } catch (Throwable ignore) {
-      // Best-effort; failure is non-critical
-    }
-    cbOcrAuto.setChecked(ocrAutoRotateApply);
-    cbOcrPostProc.setChecked(ocrPostProcessing);
-    cbLayoutAnalysis.setChecked(layoutAnalysis && layoutFeatureEnabled);
-
-    AlertDialog dlg =
-        new AlertDialog.Builder(requireContext())
-            .setTitle(R.string.ocr_choose_prep_mode_title)
-            .setView(view)
-            .setNegativeButton(R.string.cancel, null)
-            .setPositiveButton(
-                R.string.ok,
-                (d, w) -> {
-                  int selectedMode = OCR_MODE_ROBUST; // default Robust
-                  int checkedId = rg.getCheckedRadioButtonId();
-                  if (checkedId == R.id.rbtn_mode_original) selectedMode = OCR_MODE_ORIGINAL;
-                  else if (checkedId == R.id.rbtn_mode_quick) selectedMode = OCR_MODE_ROBUST;
-                  else if (checkedId == R.id.rbtn_mode_robust) selectedMode = OCR_MODE_ROBUST;
-
-                  setSelectedOcrMode(selectedMode);
-                  try {
-                    android.content.SharedPreferences p =
-                        requireContext()
-                            .getSharedPreferences(
-                                "export_options", android.content.Context.MODE_PRIVATE);
-                    p.edit()
-                        .putBoolean(BUNDLE_OCR_AUTO_ROTATE_APPLY_EXPORT, cbOcrAuto.isChecked())
-                        .putBoolean(BUNDLE_OCR_POST_PROCESSING, cbOcrPostProc.isChecked())
-                        .putBoolean(BUNDLE_LAYOUT_ANALYSIS, cbLayoutAnalysis.isChecked())
-                        .apply();
-                  } catch (Throwable ignore) {
-                    // Best-effort; failure is non-critical
-                  }
-
-                  CharSequence[] modes =
-                      new CharSequence[] {
-                        getString(R.string.ocr_mode_original),
-                        getString(R.string.ocr_mode_quick),
-                        getString(R.string.ocr_mode_robust)
-                      };
-                  // Show toast including selected mode AND current status of OCR options
-                  String modeMsg = getString(R.string.ocr_prep_mode_set, modes[selectedMode]);
-                  String autoLabel = getString(R.string.opt_ocr_auto_rotate_apply_export);
-                  String autoState = cbOcrAuto.isChecked() ? "[ON]" : "[OFF]";
-                  String postProcLabel = getString(R.string.opt_ocr_post_processing);
-                  String postProcState = cbOcrPostProc.isChecked() ? "[ON]" : "[OFF]";
-                  StringBuilder toastMsg =
-                      new StringBuilder(modeMsg)
-                          .append("\n")
-                          .append(autoLabel)
-                          .append(": ")
-                          .append(autoState)
-                          .append("\n")
-                          .append(postProcLabel)
-                          .append(": ")
-                          .append(postProcState);
-                  // Only show layout analysis in toast if feature is enabled
-                  if (FeatureFlags.isLayoutAnalysisEnabled()) {
-                    String layoutLabel = getString(R.string.opt_layout_analysis);
-                    String layoutState = cbLayoutAnalysis.isChecked() ? "[ON]" : "[OFF]";
-                    toastMsg.append("\n").append(layoutLabel).append(": ").append(layoutState);
-                  }
-                  UIUtils.showToast(requireContext(), toastMsg.toString(), Toast.LENGTH_SHORT);
-                  prepareReprocessAfterModelChange();
-                })
-            .create();
-    dlg.setOnShowListener(
-        d -> DialogUtils.improveAlertDialogButtonContrastForNight(dlg, requireContext()));
-    dlg.show();
-  }
-
-  /** Open a small dialog with OCR model actions. */
-  private void showOcrOptionsDialog() {
-    // Determine current language code and whether a deletable local (Best) model exists
-    // Determine current language code and whether a deletable local (Best) model exists
-    String curLang = null;
-    try {
-      curLang = ocrViewModel.getLanguage().getValue();
-    } catch (Throwable ignore) {
-      // Best-effort; failure is non-critical
-    }
-    final String langCode = curLang;
-
-    boolean hasBestTmp = false;
-    if (langCode != null) {
-      try {
-        java.io.File dir = OCRHelper.getTessdataDir(requireContext());
-        java.io.File local = new java.io.File(dir, langCode + ".traineddata");
-        long localSize = local.exists() ? local.length() : -1L;
-        long assetSize = -1L;
-        try {
-          java.io.InputStream in =
-              requireContext().getAssets().open("tessdata/" + langCode + ".traineddata");
-          try {
-            byte[] buf = new byte[8192];
-            long total = 0;
-            int n;
-            while ((n = in.read(buf)) != -1) total += n;
-            assetSize = total;
-          } finally {
-            try {
-              in.close();
-            } catch (Throwable ignore) {
-              // Best-effort; failure is non-critical
-            }
-          }
-        } catch (Throwable ignore) {
-          assetSize = -1L;
-        }
-        hasBestTmp = (localSize > 0 && (assetSize < 0 || localSize > assetSize + 1024));
-      } catch (Throwable ignore) {
-        hasBestTmp = false;
-      }
-    }
-    final boolean hasBest = hasBestTmp;
-
-    CharSequence[] items =
-        new CharSequence[] {
-          getString(R.string.ocr_import_manual),
-          getString(R.string.ocr_discover_packs),
-          getString(R.string.ocr_delete_best_model),
-          getString(R.string.ocr_choose_prep_mode_menu),
-          getString(R.string.ocr_explain_prep_modes)
-        };
-    AlertDialog dlg =
-        new AlertDialog.Builder(requireContext())
-            .setTitle(R.string.ocr_models_manage)
-            .setItems(
-                items,
-                (dialog, which) -> {
-                  if (which == 0) {
-                    // Manual import via SAF
-                    openTraineddataLauncher.launch(OcrModelManager.createOpenTraineddataIntent());
-                  } else if (which == 1) {
-                    showDiscoverPacksDialog();
-                  } else if (which == 2) {
-                    if (langCode == null) {
-                      UIUtils.showToast(
-                          requireContext(),
-                          getString(R.string.ocr_delete_failed),
-                          Toast.LENGTH_SHORT);
-                      return;
-                    }
-                    if (!hasBest) {
-                      UIUtils.showToast(
-                          requireContext(),
-                          getString(R.string.ocr_nothing_to_delete),
-                          Toast.LENGTH_SHORT);
-                      return;
-                    }
-                    // Confirm deletion
-                    String display = codeToDisplayName(langCode);
-                    AlertDialog confirm =
-                        new AlertDialog.Builder(requireContext())
-                            .setTitle(R.string.ocr_delete_confirm_title)
-                            .setMessage(getString(R.string.ocr_delete_confirm_msg, display))
-                            .setPositiveButton(
-                                R.string.delete,
-                                (d2, w2) -> {
-                                  boolean ok =
-                                      OcrModelManager.deleteLocalModel(requireContext(), langCode);
-                                  UIUtils.showToast(
-                                      requireContext(),
-                                      ok
-                                          ? getString(R.string.ocr_delete_success)
-                                          : getString(R.string.ocr_delete_failed),
-                                      Toast.LENGTH_SHORT);
-                                  if (ok) {
-                                    refreshLanguageSpinner();
-                                    prepareReprocessAfterModelChange();
-                                  }
-                                })
-                            .setNegativeButton(R.string.cancel, null)
-                            .create();
-                    confirm.setOnShowListener(
-                        dlg2 ->
-                            DialogUtils.improveAlertDialogButtonContrastForNight(
-                                confirm, requireContext()));
-                    confirm.show();
-                  } else if (which == 3) {
-                    showOcrPrepModeDialog();
-                  } else if (which == 4) {
-                    // Build message that also explains the OCR Auto‑Rotate option
-                    String explain = getString(R.string.ocr_prep_modes_message);
-                    String autoNote;
-                    try {
-                      autoNote = getString(R.string.ocr_prep_modes_autorotate_note);
-                    } catch (Throwable ignore) {
-                      autoNote = null;
-                    }
-                    if (autoNote != null && !autoNote.isEmpty()) {
-                      explain = explain + "\n\n" + autoNote;
-                    }
-                    AlertDialog info =
-                        new AlertDialog.Builder(requireContext())
-                            .setTitle(R.string.ocr_prep_modes_title)
-                            .setMessage(explain)
-                            .setPositiveButton(R.string.ok, null)
-                            .create();
-                    info.setOnShowListener(
-                        d2 ->
-                            DialogUtils.improveAlertDialogButtonContrastForNight(
-                                info, requireContext()));
-                    info.show();
-                  }
-                })
-            .setNegativeButton(R.string.cancel, null)
-            .create();
-    dlg.setOnShowListener(
-        d -> DialogUtils.improveAlertDialogButtonContrastForNight(dlg, requireContext()));
-    dlg.show();
-  }
-
-  private void showDiscoverPacksDialog() {
-    List<String> pkgs = OcrModelManager.discoverAddonPackages(requireContext());
-    if (pkgs == null || pkgs.isEmpty()) {
-      UIUtils.showToast(
-          requireContext(), getString(R.string.ocr_no_packs_found), Toast.LENGTH_SHORT);
-      return;
-    }
-    CharSequence[] items = pkgs.toArray(new CharSequence[0]);
-    AlertDialog dlg =
-        new AlertDialog.Builder(requireContext())
-            .setTitle(R.string.ocr_choose_pack)
-            .setItems(items, (d, idx) -> showModelsInPackDialog(pkgs.get(idx)))
-            .setNegativeButton(R.string.cancel, null)
-            .create();
-
-    dlg.setOnShowListener(
-        e -> DialogUtils.improveAlertDialogButtonContrastForNight(dlg, requireContext()));
-    dlg.show();
-  }
-
-  private void showModelsInPackDialog(String pkg) {
-    List<String> files = OcrModelManager.listTrainedDataInPackage(requireContext(), pkg);
-    if (files == null || files.isEmpty()) {
-      UIUtils.showToast(
-          requireContext(), getString(R.string.ocr_no_models_in_pack), Toast.LENGTH_SHORT);
-      return;
-    }
-    CharSequence[] items = files.toArray(new CharSequence[0]);
-    AlertDialog dlg =
-        new AlertDialog.Builder(requireContext())
-            .setTitle(R.string.ocr_choose_model)
-            .setItems(
-                items,
-                (d, idx) -> {
-                  String filename = files.get(idx);
-                  boolean ok = OcrModelManager.importFromPackage(requireContext(), pkg, filename);
-                  UIUtils.showToast(
-                      requireContext(),
-                      ok
-                          ? getString(R.string.ocr_import_success)
-                          : getString(R.string.ocr_import_failed),
-                      Toast.LENGTH_SHORT);
-                  if (ok) {
-                    refreshLanguageSpinner();
-                    prepareReprocessAfterModelChange();
-                  }
-                })
-            .setNegativeButton(R.string.cancel, null)
-            .create();
-    dlg.setOnShowListener(
-        e -> DialogUtils.improveAlertDialogButtonContrastForNight(dlg, requireContext()));
-    dlg.show();
-  }
-
-  /**
-   * Executes OCR in a single-thread executor with a fresh TessBaseAPI per job. Rotation handling:
-   * capture-rotation compensation, then user rotation (after crop, before OCR). No write-back to
-   * CropViewModel from OCR thread.
+   * Executes OCR in a single-thread executor with a fresh PaddleOCR engine per job. Rotation
+   * handling: capture-rotation compensation, then user rotation (after crop, before OCR). No
+   * write-back to CropViewModel from OCR thread.
    */
   private void performOCR() {
+    PaddleOCREngine.breadcrumb(requireContext(), "ocrfg_performOCR_start");
     if (ocrExecutor.isShutdown()) {
       UIUtils.showToast(
           requireContext(), "Screen is closing, cannot start OCR", Toast.LENGTH_SHORT);
@@ -1220,7 +726,7 @@ public class OCRFragment extends Fragment {
                     return;
                   }
 
-                  // Fresh Tesseract per job
+                  // Fresh engine per job
                   localHelper = ocrHelperProvider.get();
                   // 1 job = 1 engine instance. No automatic reinitialization per run.
                   try {
@@ -1234,19 +740,10 @@ public class OCRFragment extends Fragment {
                   Log.d(TAG, LP + "Language requested=" + lang);
 
                   try {
-                    // Ensure language is set BEFORE init so Tesseract loads the correct traineddata
+                    // Ensure language is set BEFORE init so the engine loads the correct model
                     localHelper.setLanguage(lang);
                   } catch (Throwable t) {
                     Log.e(TAG, LP + "Failed to set language " + lang, t);
-                  }
-
-                  // Detect if Best model is used and configure OCRHelper accordingly BEFORE init
-                  try {
-                    boolean useBest = isUsingBestModel(lang);
-                    localHelper.setUseBestModelSettings(useBest);
-                    Log.d(TAG, LP + "Best model settings enabled=" + useBest + " for lang=" + lang);
-                  } catch (Throwable t) {
-                    Log.w(TAG, LP + "Failed to detect/set Best model settings", t);
                   }
 
                   long tInit0 = System.nanoTime();
@@ -1259,7 +756,7 @@ public class OCRFragment extends Fragment {
                   Log.d(
                       TAG,
                       LP
-                          + "Tesseract init ok="
+                          + "Engine init ok="
                           + initOk
                           + ", took="
                           + ((System.nanoTime() - tInit0) / 1_000_000L)
@@ -1267,18 +764,6 @@ public class OCRFragment extends Fragment {
                   if (!initOk) {
                     postError("Engine not initialized");
                     return;
-                  }
-
-                  // Tune Tesseract PSM based on recognition mode (Robust benefits from PSM_AUTO)
-                  try {
-                    int prepMode = getSelectedOcrMode();
-                    int psm =
-                        (prepMode == OCR_MODE_ROBUST)
-                            ? TessBaseAPI.PageSegMode.PSM_AUTO
-                            : TessBaseAPI.PageSegMode.PSM_SINGLE_BLOCK;
-                    localHelper.setPageSegMode(psm);
-                  } catch (Throwable ignore) {
-                    // Best-effort; failure is non-critical
                   }
 
                   // Try OCR rotations only when Auto‑Rotate is enabled. Otherwise, use current
@@ -1291,13 +776,10 @@ public class OCRFragment extends Fragment {
                             .getSharedPreferences(
                                 "export_options", android.content.Context.MODE_PRIVATE);
                     allowOcrAutoRotate = p.getBoolean(BUNDLE_OCR_AUTO_ROTATE_APPLY_EXPORT, false);
-                    // Layout analysis requires both feature flag AND user preference
-                    useLayoutAnalysis =
-                        FeatureFlags.isLayoutAnalysisEnabled()
-                            && p.getBoolean(BUNDLE_LAYOUT_ANALYSIS, false);
                   } catch (Throwable ignore) {
                     // Best-effort; failure is non-critical
                   }
+                  useLayoutAnalysis = FeatureFlags.isLayoutAnalysisEnabled();
                   final boolean layoutAnalysisEnabled = useLayoutAnalysis;
 
                   // When disabled, restrict to a single attempt at the current orientation
@@ -1316,70 +798,7 @@ public class OCRFragment extends Fragment {
                     }
 
                     Bitmap rotated = (extra == 0) ? src : rotateBitmap(src, extra);
-
-                    // Apply selected recognition mode (preprocessing).
-                    // Adaptive behavior:
-                    //   1) QUICK + uneven lighting  -> upgrade to ROBUST (Quick is now a wrapper
-                    //      around the robust grayscale pipeline anyway, but the explicit upgrade
-                    //      keeps the intent clear and also activates path (2)).
-                    //   2) ROBUST + uneven lighting -> additionally trigger the Sauvola/Retinex
-                    //      binary branch (binaryOutput=true) at the page level AND for every
-                    //      region in the layout-analysis path (via OCRHelper.setForceBinaryRobust).
-                    //      Otsu clipping on heavy shadows is the dominant failure mode for
-                    //      grayscale-only preprocessing on phone photos; the binary branch with
-                    //      Sauvola/Retinex is the correct response.
-                    // ORIGINAL is always honored as-is.
-                    int mode = getSelectedOcrMode();
-                    int effectiveMode = mode;
-                    boolean unevenLighting = hasUnevenLighting(rotated);
-                    if (mode == OCR_MODE_QUICK && unevenLighting) {
-                      effectiveMode = OCR_MODE_ROBUST;
-                      Log.d(
-                          TAG,
-                          LP
-                              + "Adaptive: QUICK -> ROBUST (uneven lighting detected, extraRot="
-                              + extra
-                              + ")");
-                    }
-                    boolean forceBinary = (effectiveMode == OCR_MODE_ROBUST) && unevenLighting;
-                    if (forceBinary) {
-                      Log.d(
-                          TAG,
-                          LP
-                              + "Adaptive: ROBUST forces binary preprocessing (uneven lighting,"
-                              + " extraRot="
-                              + extra
-                              + ")");
-                    }
-
-                    Bitmap inputForOcr;
-                    if (effectiveMode == OCR_MODE_ORIGINAL) {
-                      inputForOcr = rotated;
-                    } else if (effectiveMode == OCR_MODE_QUICK) {
-                      inputForOcr = OpenCVUtils.prepareForOCRQuick(rotated);
-                    } else { // OCR_MODE_ROBUST
-                      // Default: grayscale output preserves fine details and holes in letters
-                      // (e.g. 'o'), avoiding over-aggressive binarization artifacts that can
-                      // cause substitutions like 'Oktober' → 'Okteber'. When the adaptive
-                      // heuristic detects uneven lighting we switch to the binary Sauvola/Retinex
-                      // branch which handles shadows much better.
-                      inputForOcr =
-                          OpenCVUtils.prepareForOCR(rotated, /*binaryOutput*/ forceBinary);
-                    }
-                    // Keep region-OCR (layout analysis path) in sync with the page-level mode and
-                    // the adaptive binary trigger.
-                    try {
-                      localHelper.setRecognitionMode(effectiveMode);
-                      localHelper.setForceBinaryRobust(forceBinary);
-                    } catch (Throwable ignore) {
-                      // Best-effort; failure is non-critical
-                    }
-                    if (inputForOcr == null) {
-                      Log.w(
-                          TAG,
-                          "prepareForOCR returned null (extraRot=" + extra + "), skipping attempt");
-                      continue;
-                    }
+                    Bitmap inputForOcr = rotated;
 
                     OCRViewModel.OcrTransform tx =
                         new OCRViewModel.OcrTransform(
@@ -1412,65 +831,17 @@ public class OCRFragment extends Fragment {
                     if (layoutAnalysisEnabled) {
                       OCRHelper.OcrResultWithLayout layoutResult =
                           localHelper.runOcrWithLayout(inputForOcr);
-                      // Collect all words from all regions, preserving layout structure
+                      // Collect all words from all regions
                       List<RecognizedWord> allWords = new ArrayList<>();
-                      int regionIdx = 1;
                       for (OCRHelper.RegionOcrResult regionResult : layoutResult.regionResults) {
                         if (regionResult.ocrResult() != null
                             && regionResult.ocrResult().words != null) {
-                          for (RecognizedWord w : regionResult.ocrResult().words) {
-                            w.setBlockId(regionIdx);
-                          }
                           allWords.addAll(regionResult.ocrResult().words);
                         }
-                        regionIdx++;
                       }
                       r =
                           new OCRHelper.OcrResultWords(
                               layoutResult.text, layoutResult.meanConfidence, allWords);
-
-                      // Full-page fallback: if layout analysis produced too few words or a
-                      // very low mean confidence, the page was likely mis-segmented (false
-                      // table detection, sparse-text PSM on the main body, …). Run one
-                      // additional full-page OCR pass with PSM=AUTO and keep whichever
-                      // result has more recognized words. This is a no-op cost on
-                      // documents where layout analysis works well, since the trigger
-                      // (OcrFallbackPolicy) does not fire there.
-                      int laWords0 = r.words != null ? r.words.size() : 0;
-                      int laConf0 = r.meanConfidence != null ? r.meanConfidence : 0;
-                      if (de.schliweb.makeacopy.utils.ocr.OcrFallbackPolicy
-                          .shouldRunFullPageFallback(laWords0, laConf0)) {
-                        Log.d(
-                            TAG,
-                            LP
-                                + "Layout-analysis poor (words="
-                                + laWords0
-                                + ", meanConf="
-                                + laConf0
-                                + "), running full-page fallback OCR");
-                        OCRHelper.OcrResultWords fb = localHelper.runOcrWithRetry(inputForOcr);
-                        if (fb != null) {
-                          int fbWords = fb.words != null ? fb.words.size() : 0;
-                          int fbConf = fb.meanConfidence != null ? fb.meanConfidence : 0;
-                          // Prefer the fallback if it found more words OR a clearly higher
-                          // mean confidence. Word count is the dominant signal because the
-                          // problem the fallback solves is "too few words".
-                          boolean fbBetter =
-                              fbWords > laWords0 || (fbWords >= laWords0 && fbConf > laConf0 + 1);
-                          Log.d(
-                              TAG,
-                              LP
-                                  + "Fallback result: words="
-                                  + fbWords
-                                  + ", meanConf="
-                                  + fbConf
-                                  + ", taken="
-                                  + fbBetter);
-                          if (fbBetter) {
-                            r = fb;
-                          }
-                        }
-                      }
                     } else {
                       r = localHelper.runOcrWithRetry(inputForOcr);
                     }
@@ -1482,14 +853,13 @@ public class OCRFragment extends Fragment {
                     }
 
                     // Early-exit: if the first attempt (extra=0) is already strong enough, skip
-                    // other rotations. Decision delegated to OcrEarlyExitPolicy so the gate is
-                    // unit-testable and tuned against real production samples.
+                    // other rotations
                     if (extra == 0) {
                       int mc0 = (r.meanConfidence != null ? r.meanConfidence : 0);
-                      int wc0 = (r.words != null ? r.words.size() : 0);
-                      int tl0 = (r.text != null ? r.text.length() : 0);
-                      if (de.schliweb.makeacopy.utils.ocr.OcrEarlyExitPolicy.shouldExit(
-                          mc0, wc0, tl0)) {
+                      boolean hasWords0 = r.words != null && !r.words.isEmpty();
+                      boolean hasText0 = r.text != null && !r.text.trim().isEmpty();
+                      boolean hasContent0 = hasWords0 || hasText0;
+                      if (hasContent0 && mc0 >= OCR_EARLY_EXIT_MEAN_CONF_THRESHOLD) {
                         bestResult = r;
                         bestTx = tx;
                         bestRot = 0;
@@ -1498,20 +868,13 @@ public class OCRFragment extends Fragment {
                             LP
                                 + "Early-exit: meanConf="
                                 + mc0
-                                + " (>= "
-                                + de.schliweb.makeacopy.utils.ocr.OcrEarlyExitPolicy
-                                    .DEFAULT_MIN_MEAN_CONF
-                                + "), words="
-                                + wc0
-                                + " (>= "
-                                + de.schliweb.makeacopy.utils.ocr.OcrEarlyExitPolicy
-                                    .DEFAULT_MIN_WORDS
-                                + "), textLen="
-                                + tl0
-                                + " (>= "
-                                + de.schliweb.makeacopy.utils.ocr.OcrEarlyExitPolicy
-                                    .DEFAULT_MIN_TEXT_LEN
-                                + "), skipping further rotations");
+                                + " >= "
+                                + OCR_EARLY_EXIT_MEAN_CONF_THRESHOLD
+                                + ", hasContent=true, words="
+                                + (r.words != null ? r.words.size() : 0)
+                                + ", textLen="
+                                + (r.text != null ? r.text.length() : 0)
+                                + ", skipping further rotations");
                         break;
                       }
                     }
@@ -1755,10 +1118,10 @@ public class OCRFragment extends Fragment {
                   Log.e(TAG, "performOCR: Unexpected error", e);
                   postError(e.getMessage() != null ? e.getMessage() : e.toString());
                 } finally {
-                  // Release Tesseract in the same thread that used it
+                  // Release PaddleOCR engine in the same thread that used it
                   try {
                     if (localHelper != null) localHelper.shutdown();
-                    Log.d(TAG, LP + "Tesseract shutdown complete");
+                    Log.d(TAG, LP + "PaddleOCR shutdown complete");
                   } catch (Throwable ignored) {
                     // Best-effort; failure is non-critical
                   }
@@ -1795,7 +1158,7 @@ public class OCRFragment extends Fragment {
   @Override
   public void onDestroyView() {
     super.onDestroyView();
-    // Signal cancel; do NOT forcibly interrupt the running job (avoid tearing down Tesseract
+    // Signal cancel; do NOT forcibly interrupt the running job (avoid tearing down PaddleOCR
     // mid-call)
     ocrCancelled.set(true);
 

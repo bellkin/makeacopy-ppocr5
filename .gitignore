@@ -32,3 +32,8 @@ local.properties
 __pycache__/
 *.pyc
 
+
+# PaddleOCR V5 ONNX models (download from HuggingFace, ~249 MB)
+/app/src/main/assets/paddleocr/
+
+# OpenCV native libraries (build from source with scripts/build_opencv_android.sh)

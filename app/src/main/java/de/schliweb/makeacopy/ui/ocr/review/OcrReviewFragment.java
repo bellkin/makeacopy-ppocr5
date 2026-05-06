@@ -1629,10 +1629,8 @@ public class OcrReviewFragment extends Fragment {
               try {
                 OCRHelper ocrHelper = ocrHelperProvider.get();
                 ocrHelper.setLanguage(newLang);
-                // Use PSM_SINGLE_WORD for single word recognition
-                // TODO
-                ocrHelper.setPageSegMode(
-                    com.googlecode.tesseract.android.TessBaseAPI.PageSegMode.PSM_SINGLE_WORD);
+                // PSM_SINGLE_WORD not applicable for PaddleOCR - engine handles single-word regions
+                // natively
 
                 if (ocrHelper.initTesseract()) {
                   de.schliweb.makeacopy.utils.ocr.OCRHelper.OcrResultWords result =
@@ -2192,11 +2190,8 @@ public class OcrReviewFragment extends Fragment {
             android.graphics.RectF box =
                 new android.graphics.RectF(
                     word.b[0], word.b[1], word.b[0] + word.b[2], word.b[1] + word.b[3]);
-            RecognizedWord rw =
-                new RecognizedWord(word.t != null ? word.t : "", box, word.c, word.lang);
-            rw.setBlockId(word.k);
-            rw.setLineId(word.l);
-            reviewedWords.add(rw);
+            reviewedWords.add(
+                new RecognizedWord(word.t != null ? word.t : "", box, word.c, word.lang));
           }
         }
       }

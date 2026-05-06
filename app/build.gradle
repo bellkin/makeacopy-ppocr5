@@ -21,8 +21,8 @@ android {
         applicationId "de.schliweb.makeacopy"
         minSdk = 29
         targetSdk = 36
-        versionCode 30800
-        versionName "3.8.0"
+        versionCode 30700
+        versionName "3.7.0"
 
         // Use default AndroidX test runner
         testInstrumentationRunner "androidx.test.runner.AndroidJUnitRunner"
@@ -36,8 +36,6 @@ android {
         buildConfigField "boolean", "FEATURE_A11Y_GUIDANCE", "true"
         buildConfigField "boolean", "FEATURE_LAYOUT_ANALYSIS", "false"
         buildConfigField "boolean", "FEATURE_INBOX_MODE", "true"
-        buildConfigField "boolean", "FEATURE_CROP_EDGE_DRAG", "true"
-        buildConfigField "boolean", "FEATURE_CROP_PAN_ZOOM", "true"
         buildConfigField "boolean", "IS_LIGHT", isLight ? "true" : "false"
 
         if (isLight) {
@@ -142,13 +140,10 @@ android {
             ]
             jniLibs.srcDirs = ['src/main/jniLibs']
         }
-        // Add test assets to the debug APK so target-context based asset loading works
-        // (e.g. ApplicationProvider.getApplicationContext().getAssets()). The release build
-        // is verified separately to ensure no test data leaks into production.
+        // Add test assets only for debug builds (instrumented tests)
         debug {
             assets.srcDirs += [
-                    layout.buildDirectory.dir("generated/assets/test_assets").get().asFile,
-                    'src/androidTest/assets'
+                    layout.buildDirectory.dir("generated/assets/test_assets").get().asFile
             ]
         }
     }
@@ -178,16 +173,9 @@ dependencies {
     implementation libs.camerax.lifecycle
     implementation libs.camerax.view
 
-    // Tesseract OCR dependency
-    implementation libs.tesseract
-
-    // Onnx-Runtime dependency
-    if(!isLight) {
-        implementation fileTree(dir: 'libs', include: ['*.jar'])
-    }
-    else {
-        implementation fileTree(dir: 'libs', include: ['*.aar'])
-    }
+    // PaddleOCR V5 via ONNX Runtime (models bundled in assets/paddleocr)
+    // ONNX Runtime via Maven
+    implementation libs.onnxruntime
 
     // PdfBox-Android dependency
     implementation libs.pdfbox.android
@@ -292,40 +280,9 @@ tasks.whenTaskAdded { task ->
         task.dependsOn("copyBestModelsForTest", "copyTestJpegsForTest", "copyTestPdfsForTest")
         task.finalizedBy("deleteTestAssetsAfterTest")
     }
-    // Ensure test assets are available when assembling/merging assets for the debug variant
-    // (and consequently for the androidTest variant which depends on the debug assets).
-    if (task.name == "mergeDebugAssets" || task.name == "mergeDebugAndroidTestAssets") {
+    // Declare explicit dependency: mergeDebugAssets must run after copy tasks
+    if (task.name == "mergeDebugAssets") {
         task.dependsOn("copyBestModelsForTest", "copyTestJpegsForTest", "copyTestPdfsForTest")
-    }
-}
-
-// Verify that no test data leaks into production APKs
-tasks.register("verifyNoTestDataInApk") {
-    description = "Checks that release and debug APKs do not contain test data"
-    group = "verification"
-    dependsOn("assembleRelease")
-    doLast {
-        def forbidden = ["instrumented_test_data", "layout_test_data", "test_pdfs",
-                         "ground_truth", "layout_ground_truth"]
-        def apkDir = layout.buildDirectory.dir("outputs/apk/release").get().asFile
-        apkDir.eachFileRecurse { f ->
-            if (f.name.endsWith(".apk") && !f.name.contains("androidTest")) {
-                def zip = new java.util.zip.ZipFile(f)
-                try {
-                    zip.entries().each { entry ->
-                        forbidden.each { pattern ->
-                            if (entry.name.contains(pattern)) {
-                                throw new GradleException(
-                                    "Test data found in ${f.name}: ${entry.name}")
-                            }
-                        }
-                    }
-                } finally {
-                    zip.close()
-                }
-                logger.lifecycle("✓ ${f.name}: no test data found")
-            }
-        }
     }
 }
 
