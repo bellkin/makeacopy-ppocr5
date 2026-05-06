@@ -37,6 +37,8 @@ android {
         buildConfigField "boolean", "FEATURE_LAYOUT_ANALYSIS", "false"
         buildConfigField "boolean", "FEATURE_INBOX_MODE", "true"
         buildConfigField "boolean", "IS_LIGHT", isLight ? "true" : "false"
+        buildConfigField "boolean", "FEATURE_CROP_EDGE_DRAG", "true"
+        buildConfigField "boolean", "FEATURE_CROP_PAN_ZOOM", "true"
 
         if (isLight) {
             applicationIdSuffix ".light"

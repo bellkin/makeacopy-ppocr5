@@ -87,6 +87,10 @@ public class OCRHelper {
 
   public void setReinitPerRun(boolean enable) {}
 
+  public void setRecognitionMode(int mode) {}
+
+  public void setForceBinaryRobust(boolean enable) {}
+
   public void setUseBestModelSettings(boolean enable) {
     this.useBestModelSettings = enable;
   }

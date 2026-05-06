@@ -14,7 +14,6 @@ import android.content.Intent;
 import android.content.SharedPreferences;
 import android.graphics.Bitmap;
 import android.util.Log;
-import com.googlecode.tesseract.android.TessBaseAPI;
 import de.schliweb.makeacopy.data.CompletedScansRegistry;
 import de.schliweb.makeacopy.ui.export.session.CompletedScan;
 import de.schliweb.makeacopy.utils.image.ImageDecodeUtils;
@@ -53,6 +52,10 @@ import lombok.experimental.UtilityClass;
 @UtilityClass
 public final class OcrBackgroundJobs {
   private static final String TAG = "OcrBackgroundJobs";
+
+  private static final int OCR_MODE_ORIGINAL = 0;
+  private static final int OCR_MODE_QUICK = 1;
+  private static final int OCR_MODE_ROBUST = 2;
 
   public static final String ACTION_OCR_UPDATED = "de.schliweb.makeacopy.ACTION_OCR_UPDATED";
   public static final String EXTRA_PAGE_ID = "page_id";
@@ -181,31 +184,20 @@ public final class OcrBackgroundJobs {
             boolean useLayoutAnalysis;
             try {
               SharedPreferences sp = app.getSharedPreferences(PREFS_NAME, Context.MODE_PRIVATE);
-              int storedMode = sp.getInt(PREF_KEY_OCR_MODE, OCRHelper.OCR_MODE_ROBUST);
+              int storedMode = sp.getInt(PREF_KEY_OCR_MODE, OCR_MODE_ROBUST);
               // Migrate legacy Quick → Robust, matching OCRFragment.getSelectedOcrMode().
-              if (storedMode == OCRHelper.OCR_MODE_QUICK) storedMode = OCRHelper.OCR_MODE_ROBUST;
+              if (storedMode == OCR_MODE_QUICK) storedMode = OCR_MODE_ROBUST;
               prepMode = storedMode;
               allowOcrAutoRotate = sp.getBoolean(BUNDLE_OCR_AUTO_ROTATE_APPLY_EXPORT, false);
               useLayoutAnalysis =
                   FeatureFlags.isLayoutAnalysisEnabled()
                       && sp.getBoolean(BUNDLE_LAYOUT_ANALYSIS, false);
             } catch (Throwable ignore) {
-              prepMode = OCRHelper.OCR_MODE_ROBUST;
+              prepMode = OCR_MODE_ROBUST;
               allowOcrAutoRotate = false;
               useLayoutAnalysis = false;
             }
             final boolean layoutAnalysisEnabled = useLayoutAnalysis;
-
-            // Tune Tesseract PSM based on recognition mode (Robust benefits from PSM_AUTO).
-            try {
-              int psm =
-                  (prepMode == OCRHelper.OCR_MODE_ROBUST)
-                      ? TessBaseAPI.PageSegMode.PSM_AUTO
-                      : TessBaseAPI.PageSegMode.PSM_SINGLE_BLOCK;
-              helper.setPageSegMode(psm);
-            } catch (Throwable ignore) {
-              // Best-effort; failure is non-critical
-            }
 
             // Try OCR rotations only when Auto‑Rotate is enabled. Otherwise, use current
             // orientation only. Note: unlike OCRFragment we do not apply user rotation here, the
@@ -227,11 +219,11 @@ public final class OcrBackgroundJobs {
               //   ROBUST + uneven lighting -> additionally trigger Sauvola/Retinex (forceBinary)
               int effectiveMode = prepMode;
               boolean unevenLighting = hasUnevenLighting(rotated);
-              if (effectiveMode == OCRHelper.OCR_MODE_QUICK && unevenLighting) {
-                effectiveMode = OCRHelper.OCR_MODE_ROBUST;
+              if (effectiveMode == OCR_MODE_QUICK && unevenLighting) {
+                effectiveMode = OCR_MODE_ROBUST;
                 Log.d(TAG, "Adaptive: QUICK -> ROBUST (uneven lighting, extraRot=" + extra + ")");
               }
-              boolean forceBinary = (effectiveMode == OCRHelper.OCR_MODE_ROBUST) && unevenLighting;
+              boolean forceBinary = (effectiveMode == OCR_MODE_ROBUST) && unevenLighting;
               if (forceBinary) {
                 Log.d(
                     TAG,
@@ -241,9 +233,9 @@ public final class OcrBackgroundJobs {
               }
 
               Bitmap inputForOcr;
-              if (effectiveMode == OCRHelper.OCR_MODE_ORIGINAL) {
+              if (effectiveMode == OCR_MODE_ORIGINAL) {
                 inputForOcr = rotated;
-              } else if (effectiveMode == OCRHelper.OCR_MODE_QUICK) {
+              } else if (effectiveMode == OCR_MODE_QUICK) {
                 inputForOcr = OpenCVUtils.prepareForOCRQuick(rotated);
               } else { // OCR_MODE_ROBUST
                 inputForOcr = OpenCVUtils.prepareForOCR(rotated, /*binaryOutput*/ forceBinary);
@@ -504,7 +496,7 @@ public final class OcrBackgroundJobs {
     int plus = code.indexOf('+');
     if (plus > 0) first = code.substring(0, plus);
     try {
-      File dir = OCRHelper.getTessdataDir(ctx);
+      File dir = ctx.getCacheDir();
       File local = new File(dir, first + ".traineddata");
       long localSize = local.exists() ? local.length() : -1L;
 
